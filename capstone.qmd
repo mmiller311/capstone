@@ -1,0 +1,1281 @@
+---
+title: "Complements, Not Competitors: The Positive Effects of Latin American Immigration on Native-Born Workers' Wages"
+bibliography: the_bib.bib
+csl: american-political-science-association.csl
+abstract: >
+  Assessing the academic literature surrounding immigration and its impacts on the wages of native-born Americans with a high school education or less invokes contradictions. Some researchers provide empirical evidence that immigrants positively affect natives' wages, while others suggest wage depression. Key to most empirical findings is the assumption of labor substitution – the idea that immigrant labor can completely replace native labor in competitive markets. This paper challenges the notion of perfect substitution between immigrant and native labor and proposes a more nuanced landscape that includes complementarity. Using the five-year American Community Survey estimate from 2019 to 2023 and an accompanying instrumental regression analysis, this paper demonstrates that higher concentrations of Spanish-speaking immigrants positively correlate with the wages of native-born Americans with a high school education or less, suggesting complementarity. These findings suggest that the concerted political focus on the negative economic impacts of immigration is misplaced and should instead focus on immigrant labor integration.
+
+papersize: letter
+
+margin-left: 1in
+margin-right: 1in
+margin-top: 1in
+margin-bottom: 1in
+cap-location: top
+
+format: 
+  pdf:
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    linestretch: 2
+    fig-cap-location: top
+    tbl-cap-location: top
+    header-includes:
+      - \pagenumbering{roman}
+
+    
+    
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r code_setup, warning=FALSE, echo=FALSE, message=FALSE}
+
+library(tidycensus)
+library(tidyverse)
+library(stargazer)
+library(ipumsr)
+library(janitor)
+library(sandwich)
+library(AER)
+library(lmtest)
+library(tigris)
+library(ggthemes)
+library(statebins)
+library(quantreg)
+library(modelsummary)
+library(gt)
+library(gtExtras)
+library(ggrepel)
+library(broom)
+
+################################################################################
+#Get PUMS data from US census Bureau
+################################################################################
+
+setwd('C:/Users/matth/OneDrive - Johns Hopkins/Capstone/Code')
+
+
+#Compile variables that are needed for filtering and model-building
+pums_vars <- c(
+  "WAGP" = "WAGP",        # Wages: PWGTP
+  "AGEP" = "AGEP",        # Age: PWGTP
+  "SCHL" = "SCHL",        # Education Level: PWGTP
+  "SEX" = "SEX",          # Gender: PWGTP
+  "RAC1P" = "RAC1P",      # Race: PWGTP
+  "HISP" = "HISP",        # Hispanic Origin: PWGTP
+  "LANP" = "LANP",        # Language Spoken at Home: PWGTP
+  "PUMA" = "PUMA",        # Public Use Microdata Area (PUMA)
+  "ST" = "ST",            # State Code
+  "PWGTP" = "PWGTP",      # Person Weight (Important for weighted estimates)
+  "OCCP" = "OCCP",        # Occupation Code: PWGTP
+  "INDP" = "INDP",    # Industry Code: PWGTP
+  "COW" = "COW",          # Class of Worker: PWGTP
+  "NATIVITY" = "NATIVITY", #US Nativity
+  "ESR" = "ESR",          #Employment Status: PWGTP
+  "WKHP" = "WKHP",        #Hours worked per week
+  "MAR" = "MAR"           #Marital Status
+  )
+
+#Try to get a local file. Waiting for the API to run is painful
+if (file.exists("pums_2023.rds"))
+  {
+  pums_data <- readRDS("pums_2023.rds")
+} else {
+pums_data <- get_pums(
+  variables = pums_vars,
+  state = "all",
+  survey = "acs5",      
+  year = 2023,
+  recode = TRUE,      
+  show_call = TRUE      
+)
+}
+
+#Recode variables
+pums_data <- 
+  pums_data %>%
+  mutate(
+    state_puma_ky = paste(STATE,PUMA,sep="_"),
+    WAGP = as.double(WAGP),
+    AGEP = as.double(AGEP),
+    SCHL = as.factor(SCHL),
+    SEX = as.factor(SEX),
+    RAC1P = as.factor(RAC1P),
+    HISP = as.factor(HISP),
+    LANP = as.factor(LANP),
+    COW = as.factor(COW),
+    NATIVITY = as.factor(NATIVITY),
+    ESR = as.factor(ESR),
+    WKHP = as.double(WKHP),
+    MAR = as.factor(MAR)
+    
+  )
+
+# Create function to recode factor variables in pums_data
+factor_transition <- function(x){
+  x %>%
+  mutate(
+    occp_numeric = as.double(OCCP),
+    indp_numeric = as.double(INDP),
+    occp_aggregation = as.factor(
+      case_when(
+        occp_numeric <= 3550 ~ "Management, Business, Science, and Arts",
+        occp_numeric >= 3601 & occp_numeric <= 4655 ~ "Service",
+        occp_numeric >= 4700 & occp_numeric <= 5940 ~ "Sales and Office",
+        occp_numeric >= 6005 & occp_numeric <= 7640 ~ "Natural Resources, Construction, and Maintenance",
+        occp_numeric >= 7700 & occp_numeric <= 9760 ~ "Production, Transportation, and Material Moving",
+        occp_numeric >= 9800 & occp_numeric <= 9830 ~ "Military",
+        occp_numeric == 9920 ~ "Unemployed",
+        TRUE ~ "There's a problem somewhere"
+      )
+    ),
+    indp_aggregation = as.factor(
+      case_when(
+        indp_numeric <= 490 ~ "Agriculture, Forestry, Fishing, and Hunting, and Mining",
+        indp_numeric >= 570 & indp_numeric <= 690 ~ "Transportation and Warehousing, and Utilities",
+        indp_numeric == 770 ~ "Construction",
+        indp_numeric >= 1070 & indp_numeric <= 3990 ~ "Manufacturing",
+        indp_numeric >= 4070 & indp_numeric <= 4590 ~ "Wholesale Trade",
+        indp_numeric >= 4670 & indp_numeric <= 5791 ~ "Retail Trade",
+        indp_numeric >= 6070 & indp_numeric <= 6390 ~ "Transportation and Warehousing, and Utilities",
+        indp_numeric >= 6471 & indp_numeric <= 6781 ~ "Information",
+        indp_numeric >= 6871 & indp_numeric <= 7190 ~ "Finance and Insurance, and Real Estate and Rental and Leasing",
+        indp_numeric >= 7270 & indp_numeric <= 7790 ~ "Professional, Scientific, and Management, and Administrative and Waste Management Services",
+        indp_numeric >= 7860 & indp_numeric <= 8470 ~ "Educational Services, and Health Care and Social Assistance",
+        indp_numeric >= 8561 & indp_numeric <= 8690 ~ "Arts, Entertainment, and Recreation, and Accommodation and Food Services",
+        indp_numeric >= 8770 & indp_numeric <= 9290 ~ "Other Services (except Public Administration)",
+        indp_numeric >= 9370 & indp_numeric <= 9590 ~ "Public Administration",
+        indp_numeric >= 9670 & indp_numeric <= 9870 ~ "Military",
+        indp_numeric == 9920 ~ "Unemployed",
+        TRUE ~ "There's a problem somewhere"
+      )
+    ),
+    occp_aggregation = fct_relevel(occp_aggregation,
+                                   "Management, Business, Science, and Arts",
+                                   "Service",
+                                   "Sales and Office",
+                                   "Natural Resources, Construction, and Maintenance",
+                                   "Production, Transportation, and Material Moving",
+                                   "Military"
+    ),
+    indp_aggregation = fct_relevel(indp_aggregation,
+                                   "Agriculture, Forestry, Fishing, and Hunting, and Mining",
+                                   "Construction",
+                                   "Manufacturing",
+                                   "Wholesale Trade",
+                                   "Retail Trade",
+                                   "Transportation and Warehousing, and Utilities",
+                                   "Information",
+                                   "Finance and Insurance, and Real Estate and Rental and Leasing",
+                                   "Professional, Scientific, and Management, and Administrative and Waste Management Services",
+                                   "Educational Services, and Health Care and Social Assistance",
+                                   "Arts, Entertainment, and Recreation, and Accommodation and Food Services",
+                                   "Other Services (except Public Administration)",
+                                   "Public Administration",
+                                   "Military"
+    ),
+    SEX = fct_recode(SEX,
+                     "Male" = "1",
+                     "Female" = "2"
+    ),
+    RAC1P = fct_collapse(RAC1P,
+                         "White Alone" = "1",
+                         "Black or African American Alone" = "2",
+                         "Native American" = c("3","4","5"),
+                         "Asian Alone" = "6",
+                         "Native Hawaiian and Other Pacific Islander Alone" = "7",
+                         "Some Other Race Alone" = "8",
+                         "Two or More Races" = "9"
+    ),
+    HISP = fct_recode(
+      fct_other(HISP, keep = "01", other_level = "Hispanic/Latino"),
+      "Not Hispanic/Latino" = "01"
+      
+      
+    ),
+    MAR = fct_collapse(MAR,
+                       "Married" = "1",
+                       "Not Married" = c("2","3","4","5")
+                       
+    )
+  )
+}
+
+
+
+#Calculate Spanish immigrant concentration from ACS 2023
+spanish_immigrants_dat <- 
+  pums_data %>%
+  filter(LANP == "1200",
+         NATIVITY == "2",
+         HISP != "01",
+         AGEP >= 18 & AGEP <= 64,
+         ESR %in% c("1","2","4","5"),
+         COW %in% c("1","2","3","4","5"),
+         WAGP > 0) %>%
+  group_by(state_puma_ky) %>%
+  summarize(
+    spanish_imm_weight = sum(PWGTP,na.rm = T), .groups = 'drop'
+            )
+  
+total_population_dat <-
+  pums_data %>%
+  group_by(state_puma_ky) %>%
+  summarize(
+    total_weight = sum(PWGTP,na.rm = T), .groups = 'drop'
+  )
+
+immigrant_prop_puma <-
+  spanish_immigrants_dat %>%
+  left_join(total_population_dat, by = "state_puma_ky") %>%
+  mutate(spanish_prop = spanish_imm_weight / total_weight) %>%
+  select(state_puma_ky, spanish_prop)
+
+#Calculate native data from ACS 2023
+native_data_lower <-
+  pums_data %>%
+  filter(
+    NATIVITY == "1",
+    !(SCHL %in% c("18","19","20","21","22","23","24")),
+    AGEP >= 18 & AGEP <= 64,
+    ESR %in% c("1","2","4","5"),
+    COW %in% c("1","2","3","4","5"),
+    WAGP > 0
+  ) %>%
+  factor_transition(.) %>%
+  mutate(
+    SCHL = fct_collapse(SCHL,
+                        "High School" = c("16", "17"),
+                        "Some High School" = c("12", "13", "14", "15"),
+                        "Middle School" = c("9", "10", "11"),
+                        "Elementary School or Less" = c("0","1","2","3","4","5","6","7","8")
+    )
+  )
+
+native_data_higher <- 
+  pums_data %>%
+  filter(
+    NATIVITY == "1",
+    SCHL %in% c("18","19","20","21","22","23","24"),
+    AGEP >= 18 & AGEP <= 64,
+    ESR %in% c("1","2","4","5"),
+    COW %in% c("1","2","3","4","5"),
+    WAGP > 0
+  ) %>%
+  factor_transition(.) %>%
+  mutate(
+    SCHL = fct_collapse(SCHL,
+                        "Some College" = c("18","19"),
+                        "Associate's Degree" = c("20"),
+                        "Bachelor's degree" = c("21"),
+                        "Master's degree" = c("22"),
+                        "Professional degree beyond a bachelor's degree" = c("23"),
+                        "Doctorate degree" = c("24")
+                        )
+  )
+
+native_data_all <-
+  pums_data %>%
+  filter(
+    NATIVITY == "1",
+    AGEP >= 18 & AGEP <= 64,
+    ESR %in% c("1","2","4","5"),
+    COW %in% c("1","2","3","4","5"),
+    WAGP > 0
+  ) %>%
+  factor_transition(.) %>%
+  mutate(
+    SCHL = fct_collapse(SCHL,
+                        "Some College" = c("18","19"),
+                        "Associate's Degree" = c("20"),
+                        "Bachelor's degree" = c("21"),
+                        "Master's degree" = c("22"),
+                        "Professional degree beyond a bachelor's degree" = c("23"),
+                        "Doctorate degree" = c("24"),
+                        "High School" = c("16", "17"),
+                        "Some High School" = c("12", "13", "14", "15"),
+                        "Middle School" = c("9", "10", "11"),
+                        "Elementary School or Less" = c("0","1","2","3","4","5","6","7","8")
+    )
+  )
+
+#Get IPUMS data for 2000 Spanish immigrant concentration
+ddi <- read_ipums_ddi('usa_00003.xml')
+ipums_data <- read_ipums_micro(ddi) %>%
+  mutate(
+    state_puma_ky = paste(
+      sprintf("%02d",as.integer(STATEFIP)),
+      sprintf("%05d", as.integer(PUMA)),
+      sep = "_"
+    )
+  )
+
+#Integrate PUMA Crosswalk Data
+two_thousand_to_ten <- 
+  read_csv('puma2k_puma2010.csv',skip = 1) %>% 
+  clean_names(.) %>%
+  mutate(
+    state_puma_ky = paste(
+      sprintf("%02d",as.integer(fips_state)),
+      sprintf("%05d", as.integer(puma2k)),
+      sep = "_"
+    ),
+    puma12 = paste(
+      sprintf("%02d",as.integer(fips_state)),
+      sprintf("%05d", as.integer(puma12)),
+      sep = "_"
+  )
+  ) %>%
+  rename(
+    allocation_factor = puma2k_to_puma12_alloc_factor
+  ) %>%
+  select(state_puma_ky, puma12, allocation_factor)
+  
+ten_to_twenty <- 
+  read_csv('puma2010-to-puma2020.csv',skip = 1) %>%
+  clean_names(.) %>%
+  mutate(
+    state_puma_ky = paste(
+      sprintf("%02d",as.integer(state_code)),
+      sprintf("%05d", as.integer(puma_2012)),
+      sep = "_"
+    ),
+    puma22 = paste(
+      sprintf("%02d",as.integer(state_code)),
+      sprintf("%05d", as.integer(puma_2022)),
+      sep = "_"
+    )
+  ) %>%
+  rename(
+    allocation_factor_22 = puma12_to_puma22_allocation_factor
+  ) %>%
+  select(state_puma_ky, puma22, allocation_factor_22)
+
+#Finally, filter IPUMS data accordingly
+spanish_immigrants_ipums <-
+  ipums_data %>%
+  filter(
+    LANGUAGED == 1200,
+    BPL > 120,
+    HISPAND != 0,
+    AGE >= 18 & AGE <= 64,
+    EMPSTAT == 1,
+    CLASSWKR == 2,
+    INCWAGE > 0
+  ) %>%
+  group_by(state_puma_ky) %>%
+  summarize(
+    spanish_imm_weight_00 = sum(PERWT, na.rm = T),.groups = 'drop'
+  ) %>%
+  left_join(two_thousand_to_ten, by = "state_puma_ky") %>%
+  mutate(spanish_imm_weight_12 = spanish_imm_weight_00 * allocation_factor) %>%
+  group_by(puma12) %>%
+  summarize(spanish_imm_weight_12 = sum(spanish_imm_weight_12),.groups = 'drop') %>%
+  left_join(ten_to_twenty, by = c("puma12" = "state_puma_ky")) %>%
+  mutate(spanish_imm_weight_22 = spanish_imm_weight_12 * allocation_factor_22) %>%
+  group_by(puma22) %>%
+  summarize(spanish_imm_weight_22 = sum(spanish_imm_weight_22),.groups = 'drop') %>%
+  rename(state_puma_ky = puma22)
+
+#Get ipums total population
+all_ipums <-
+  ipums_data %>%
+  group_by(state_puma_ky) %>%
+  summarize(
+    total_pop_weight = sum(PERWT, na.rm = T),.groups = 'drop'
+  ) %>%
+  left_join(two_thousand_to_ten, by = "state_puma_ky") %>%
+  mutate(total_pop_weight_12 = total_pop_weight * allocation_factor) %>%
+  group_by(puma12) %>%
+  summarize(total_pop_weight_12 = sum(total_pop_weight_12),.groups = 'drop') %>%
+  left_join(ten_to_twenty, by = c("puma12" = "state_puma_ky")) %>%
+  mutate(total_pop_weight_22 = total_pop_weight_12 * allocation_factor_22) %>%
+  group_by(puma22) %>%
+  summarize(total_pop_weight_22 = sum(total_pop_weight_22),.groups = 'drop') %>%
+  rename(state_puma_ky = puma22)
+
+
+#Create Spanish immigrant proportion for 2000
+immigrant_prop_ipums <-
+  spanish_immigrants_ipums %>%
+  left_join(all_ipums, by = "state_puma_ky") %>%
+  mutate(spanish_prop_00 = spanish_imm_weight_22 / total_pop_weight_22) %>%
+  select(state_puma_ky, spanish_prop_00)
+
+#Create immigrants df to merge back to natives df
+all_immigrants <-
+  immigrant_prop_puma %>%
+  left_join(immigrant_prop_ipums, by = "state_puma_ky") %>%
+  replace_na(.,list(spanish_prop_00 = 0))
+  
+  
+#Merge ipums 2000 data with ACS 2023 data for all native groups
+all_data_lower <- 
+  native_data_lower %>%
+  left_join(all_immigrants, by = "state_puma_ky")
+
+all_data_higher <-
+  native_data_higher %>%
+  left_join(all_immigrants, by = "state_puma_ky")
+
+all_data_all <- 
+  native_data_all %>%
+  left_join(all_immigrants, by = "state_puma_ky")
+
+#Complete an analysis by industry
+
+#Expected wage depression
+const_sub <- 
+  all_data_lower %>%
+  filter(indp_numeric == 770)
+
+manufact_sub <- 
+  all_data_lower %>%
+  filter(indp_numeric >= 1070 & indp_numeric<= 3990)
+
+hospitality_sub <-
+  all_data_lower %>%
+  filter(indp_numeric >= 8660 & indp_numeric <= 8690)
+
+agriculture_sub <-
+  all_data_lower %>%
+  filter(indp_numeric >= 170 & indp_numeric <= 290)
+
+#Expected wage complements
+health_social_sub <-
+  all_data_lower %>%
+  filter(indp_numeric >= 7970 & indp_numeric <= 8470)
+
+education_sub <-
+  all_data_lower %>%
+  filter(indp_numeric >= 7860 & indp_numeric <= 7890)
+
+prof_services_sub <-
+  all_data_lower %>%
+  filter(indp_numeric >= 7270 & indp_numeric <= 7490)
+
+retail_sub <-
+  all_data_lower %>%
+  filter(indp_numeric >= 4670 & indp_numeric <= 5791)
+
+
+```
+
+```{r ivreg_models, warning=FALSE, echo=FALSE, cache=TRUE, message=FALSE}
+
+###################################################################################
+#Primary Research Question
+###################################################################################
+
+#Make primary models
+model1 <- ivreg(
+  log(WAGP) ~ spanish_prop + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation + indp_aggregation + WKHP + MAR + as.factor(STATE) |
+  spanish_prop_00 + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation + indp_aggregation + WKHP + MAR + as.factor(STATE),
+  data = all_data_lower,
+  weights = PWGTP
+)
+
+model2 <- ivreg(
+  log(WAGP) ~ spanish_prop + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation + indp_aggregation + WKHP + MAR + as.factor(STATE) |
+    spanish_prop_00 + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation + indp_aggregation + WKHP + MAR + as.factor(STATE),
+  data = all_data_higher,
+  weights = PWGTP
+)
+
+model3<- ivreg(
+  log(WAGP) ~ spanish_prop + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation + indp_aggregation + WKHP + MAR + as.factor(STATE) |
+    spanish_prop_00 + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation + indp_aggregation + WKHP + MAR + as.factor(STATE),
+  data = all_data_all,
+  weights = PWGTP
+)
+
+#Get robust standard errors clustered by state
+primary_models_vcov <-
+  list(
+    "Less Education" = vcovCL(model1, cluster = ~state_puma_ky),
+    "More Education" = vcovCL(model2, cluster = ~state_puma_ky),
+    "All Natives" = vcovCL(model3, cluster = ~state_puma_ky)
+  )
+
+
+
+
+```
+
+```{r idustry_ivreg, echo=FALSE, warning=FALSE, cache=TRUE, message=FALSE}
+###################################################################################
+#Industry Research
+###################################################################################
+
+#Substitutes
+const_model <- ivreg(
+  log(WAGP) ~ spanish_prop + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE) |
+  spanish_prop_00 + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE),
+  data = const_sub,
+  weights = PWGTP
+)
+
+manufact_model <- ivreg(
+  log(WAGP) ~ spanish_prop + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE) |
+  spanish_prop_00 + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE),
+  data = manufact_sub,
+  weights = PWGTP
+)
+
+hospitality_model <- ivreg(
+  log(WAGP) ~ spanish_prop + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE) |
+  spanish_prop_00 + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE),
+  data = hospitality_sub,
+  weights = PWGTP
+)
+
+agriculture_model <- ivreg(
+  log(WAGP) ~ spanish_prop + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE) |
+  spanish_prop_00 + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE),
+  data = agriculture_sub,
+  weights = PWGTP
+)
+
+#Complements
+
+health_social_model <- ivreg(
+  log(WAGP) ~ spanish_prop + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE) |
+  spanish_prop_00 + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE),
+  data = health_social_sub,
+  weights = PWGTP
+)
+
+education_model <- ivreg(
+  log(WAGP) ~ spanish_prop + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE) |
+  spanish_prop_00 + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE),
+  data = education_sub,
+  weights = PWGTP
+)
+
+prof_services_model <- ivreg(
+  log(WAGP) ~ spanish_prop + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE) |
+  spanish_prop_00 + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE),
+  data = prof_services_sub,
+  weights = PWGTP
+)
+
+retail_model <- ivreg(
+  log(WAGP) ~ spanish_prop + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE) |
+  spanish_prop_00 + AGEP + I(AGEP^2) + SCHL + SEX + RAC1P + occp_aggregation  + WKHP + MAR + as.factor(STATE),
+  data = retail_sub,
+  weights = PWGTP
+)
+
+#Get Robust Stanard Errors
+industry_models_vcov <-
+  list(
+    "Construction" = vcovCL(const_model, cluster = ~state_puma_ky),
+    "Manufacturing" = vcovCL(manufact_model, cluster = ~state_puma_ky),
+    "Hospitality" = vcovCL(hospitality_model, cluster = ~state_puma_ky),
+    "Agriculture" = vcovCL(agriculture_model, cluster = ~state_puma_ky),
+    "Health and Social Services" = vcovCL(health_social_model, cluster = ~state_puma_ky),
+    "Education" = vcovCL(education_model, cluster = ~state_puma_ky),
+    "Professional Services" = vcovCL(prof_services_model, cluster = ~state_puma_ky),
+    "Retail" = vcovCL(retail_model, cluster = ~state_puma_ky)
+    
+  )
+
+
+```
+
+```{r gender_ivreg, echo=FALSE, warning=FALSE, cache=TRUE}
+###################################################################################
+#Gender Analysis
+###################################################################################
+
+#Create models for gender
+model_male <- ivreg(
+  log(WAGP) ~ spanish_prop + AGEP + I(AGEP^2) + SCHL + RAC1P + occp_aggregation + indp_aggregation + WKHP + MAR + as.factor(STATE) |
+  spanish_prop_00 + AGEP + I(AGEP^2) + SCHL + RAC1P + occp_aggregation + indp_aggregation + WKHP + MAR + as.factor(STATE),
+  data = filter(all_data_lower, SEX == "Male"),
+  weights = PWGTP
+)
+
+model_female <- ivreg(
+  log(WAGP) ~ spanish_prop + AGEP + I(AGEP^2) + SCHL + RAC1P + occp_aggregation + indp_aggregation + WKHP + MAR + as.factor(STATE) |
+  spanish_prop_00 + AGEP + I(AGEP^2) + SCHL + RAC1P + occp_aggregation + indp_aggregation + WKHP + MAR + as.factor(STATE),
+  data = filter(all_data_lower, SEX == "Female"),
+  weights = PWGTP
+)
+
+#Compute clustered standard errors for table
+
+gender_vcov <-
+  list(
+    "Male" = vcovCL(model_male, cluster = ~state_puma_ky),
+    "Female" = vcovCL(model_female, cluster = ~state_puma_ky)
+  )
+```
+
+\clearpage
+
+\raggedright
+
+\setlength{\parindent}{20pt}
+
+\pagenumbering{arabic}
+
+## **Introduction**
+
+The economic impacts of immigration on workers in the United States remain hotly contested.  Proponents of increased immigration argue that immigrants work in occupations that exhibit a high degree of complementarity with related occupations and industries, ultimately increasing marginal productivity and demand for associated jobs that natives fill [@brookingsimmigration]. Furthermore, proponents note that the complementarity between immigrants and natives exists since immigrants tend to fill more manual occupations in the case of workers with a high school education or less (denoted as less-educated immigrants) and technical roles in the case of immigrants with some college or more (denoted as more-educated immigrants) [@PWBM2016].  Proponents argue that the specialization in manual and technical roles enables natives to assume roles that require language, communication, and cultural knowledge, thus increasing productivity and wages for natives [@PWBM2016]. Overall, proponents assess immigration through a lens of complementary labor, where immigrants and natives specialize in their relative skills to bolster productivity.
+
+On the other hand, detractors of increased immigration assess migrant flows through the lens of increased labor competition. Additional immigration means natives face growing difficulties in finding applicable work, resulting in decreased wages due to the extra labor supply. Detractors point to data that indicates “a 10 percent increase in the number of workers with a particular set of skills probably lowers the wage of that group by at least 3 percent” [@borjas2016immigration]. Furthermore, they note that the increased labor competition has disproportionately affected natives with a high school education or less since much of the recent immigration patterns have included immigrants with relatively low levels of education [@borjas2016immigration]. Therefore, detractors argue that some of the most economically vulnerable natives are most susceptible to the lower wages and higher unemployment wrought by increased immigration and need protection. Ultimately, arguments behind the idea of increased immigration harming native workers rest on the notion that workers of similar skill and experience levels are perfect substitutes for one another, thus increasing labor supply and depressing wages.
+
+Given increasing economic anxieties around inflation and growth among workers in the United States, it’s critical to understand whether increased immigration positively or negatively affects their economic well-being. Doing so holds the promise of informing pragmatic policy that could bolster productivity, wages, and employment across the United States. Furthermore, the confirmation that positive economic benefits exist from increased immigration or their denial can provide the United States with a unified approach to immigration rather than a patchwork of politically charged ideas and policy implementations that swing wildly between administrations. Overall, a shared vision of the economic impacts of immigration driven by evidence can productively focus the attention of U.S. policymakers to maximize the well-being of their constituents.
+
+The paramount importance of understanding the economic effects of immigration, coupled with its inherent ambiguity in the public discourse, presents a research opportunity. This paper follows the opportunity to study the economic impacts of immigration on native-born American workers. Specifically, it seeks to analyze the wage effects that increased immigration from Spanish-speaking countries has on native workers with a high school education or less, a group that detractors of increased immigration purport disproportionately face adverse economic effects of immigration. Ultimately, the research presented in this paper addresses the question: Does the concentration of Spanish-speaking immigrants impact the wages of native workers with a high school education or less?
+
+This paper argues that the concentration of Spanish-speaking immigrants has no discernible negative impact on the wages of native workers with a high school education or less. Its foundation rests on a disagreement with the argument that detractors of increased immigration propose, namely, that immigrants are perfect substitutes for native workers in the labor force, thus increasing the supply and depressing wages. Instead, this paper suggests that those arguing for increased immigration due to the complementary nature of immigrant labor are correct in their assessment, and wages should, therefore, see no impact or an increase when the concentration of Spanish-speaking immigrants increases.  This paper also suggests that viewing immigration through the lens of local labor markets rather than a national labor market is imperative, as local labor markets better account for the moving constraints on workers.
+
+Ultimately, the analysis presented in this paper finds a positive and statistically significant impact of Spanish-speaking immigrants on the wages of native workers with a high school education or less. Furthermore, it shows that the concentration of Spanish-speaking immigrants also has a positive and statistically significant impact on the wages of those with more than a high school education or natives in general, and the effect is more substantial relative to the group with a high school education or less. Specifically, for every 1% increase in the concentration of Spanish-speaking immigrants, wages increase by 0.149%, 0.589%, and 0.442% on average for natives with less education, more education, and all natives, respectively.  Furthermore, the analysis adds nuance to the overall findings by providing evidence that the economic impacts on native workers with a high school education or less vary by industry and gender, with workers in hospitality, education, health/social services, professional services, and retail industries seeing 0.71%, 0.68%, 0.34%, 0.02%, and 0.32% higher wages on average associated with a 1% increase in the concentration of Spanish-speaking immigrants, respectively. On the other hand, native workers with a high school education or less in the construction, agriculture, and manufacturing industries see 0.22%, 0.50%, and 0.30% lower wages on average associated with a 1% increase in the concentration of Spanish-speaking immigrants, respectively. Finally, this paper finds that women see 0.32% higher wages on average, which is associated with a 1% increase in the concentration of Spanish-speaking immigrants, while men see 0.01% higher wages.
+
+ These findings are essential in the discussion of immigration policy in the United States as they provide evidence that one of the significant rationales used to slow the rate of immigration, negative native wage impacts, likely has no realistic bearing. Therefore, it’s likely that shifting the national agenda to problems with more robust evidence will elicit better outcomes for constituents.
+
+## Literature Review
+
+From a classical labor economics point of view, the impact of immigration on wages is relatively simple. As the supply of workers increases, workers' wages should decrease since more workers are available, chasing the same fixed number of jobs with employers, assuming demand is constant. This classical model of labor economics utilizes several assumptions. Some of these include the idea of perfect substitutability, where one worker with given experience and education can compete against another worker with similar experience and education for the same job. In this view, workers exist in an open market where competition between the supply of workers and the demand from employers determines an equilibrium wage in the market. Furthermore, the idea of an open labor market where workers are free to move anywhere within their respective countries to pursue jobs provided their respective economies are open is another underlying assumption in the classical model of labor economics.
+
+This classical approach to labor economics is embodied in the work of George Borjas.  In a 2003 study, Borjas assumes that an open labor market exists in the United States and that native workers with given combinations of education and experience compete directly with immigrants with the same education and experience levels [@30e6ac9b-71dc-358d-98cb-6b85354ba1ef]. Borjas notes that the open labor market approach accounts for bias in previous studies, which accounted for immigrants in local labor markets using spatial data. Studies utilizing immigrant concentration using spatial data were criticized since immigrants were not randomly distributed across local labor markets, thus leading to biased estimates [@30e6ac9b-71dc-358d-98cb-6b85354ba1ef]. The skill and experience level component encapsulates workers with lesser degrees of education with varying years of work experience and workers with higher degrees of education with differing years of experience [@30e6ac9b-71dc-358d-98cb-6b85354ba1ef]. Borjas contends that categorizing workers by education and experience adequately accounts for substitutability among immigrants and workers with similar educational and experience backgrounds, thus providing more precise estimates of how the wages of differing categories of natives respond to increased immigration [@30e6ac9b-71dc-358d-98cb-6b85354ba1ef]. Borjas concludes that increased immigration between 1960 and 2001 led to fewer earnings for native workers across all skill and experience groups, with an exception for college graduates, who saw no wage change [@30e6ac9b-71dc-358d-98cb-6b85354ba1ef]. Notably, Borjas continued using this methodology with Katz in a study that directly assessed the impact of Mexican immigrants on the wages of native workers. This study is notable as it directly uses the classical model of labor economics to test if Mexican immigrants, a group that generally skews less educated, have a discernible impact on native wages for both more and less-educated workers [@NBERw11281]. Therefore, the study provides context on wage impacts under the assumption of perfect substitutability for an immigrant group that skews less educated with given work experience against natives with similar education and experience [@NBERw11281]. Ultimately, the study finds that Mexican immigration from 1980-2000 “lowered the wage of most native workers, particularly those at the bottom and top of the education distribution”[@NBERw11281].
+
+In contrast to the models Borjas presents, other models used in labor economics relax these assumptions. Specifically, the assumption of perfect substitutability is relaxed to allow for imperfect substitution among workers. This idea rests on the notion that one worker with a specific education and experience level might fundamentally differ from another with a similar education and experience level. These differences might manifest in culture or language, for example. Next, relaxing the assumption of an open labor market where workers can move freely and immediately in response to changing labor market conditions is challenged. Models differing from the classical assumptions question if there are “stickiness” factors that keep workers tied to communities like family, houses, and other social ties that keep workers tied to their localities in the short and medium term.
+
+Other economists working in labor economics have created models that incorporate imperfect substitution and a localized interpretation of labor markets. One economist, David Card, incorporates local labor markets into a model for understanding the impact of immigration on the wages of native workers. Specifically, Card assumes that labor markets are localized in patterns resembling metropolitan statistical areas (MSAs), where concentrations of immigrants within localized labor markets affect the wages of local native workers [@5ef82ded-cb9d-38e9-bdc0-68a4485c394d]. Furthermore, Card addresses Borjas’s concern about immigrant self-selection into local labor markets through an instrument variable that uses prior immigrant settlement patterns as a predictor of the present immigrant concentration by MSA [@5ef82ded-cb9d-38e9-bdc0-68a4485c394d]. In the interpretation of his study’s results, Card finds that immigration over the 1980-2000 period, which saw an influx of low-skill and less-educated immigrants, did not impact the wages of either more or less-educated native workers [@5ef82ded-cb9d-38e9-bdc0-68a4485c394d].
+
+Card’s work is supported by findings from Ottaviano and Peri, which directly address Borjas’s assumption that immigrant and native workers are perfectly substitutable given their education and years of experience. In conjunction with Borjas, Ottaviano and Peri assume a national and open labor market. That said, the study differs from that of Borjas by assuming imperfect substitutability among immigrant and native workers with similar education and experience in the open labor market [@d159eb91-86f6-3fcd-8c6b-f5b19000346e]. Furthermore, they implement partial and total wage effects in their model, where partial wage effects refer to the direct wage impacts by immigrants on natives within every shared combination of education and experience [@d159eb91-86f6-3fcd-8c6b-f5b19000346e]. In contrast, total wage effects refer to the wage impacts wrought by immigrants on natives with differing levels of education and experience [@d159eb91-86f6-3fcd-8c6b-f5b19000346e]. Overall, Ottaviano and Peri find that immigration between 1990 and 2006 is associated with a 0.6% wage increase for natives, where wage impacts for less-educated natives with given sets of experience ranged from -2.1% and 1.7% [@d159eb91-86f6-3fcd-8c6b-f5b19000346e]. Taken in conjunction with the findings from Card, the findings from Ottaviano and Peri indicate that some form of complementarity likely exists in the labor market between immigrants and natives, and the wage effects appear to vary by education group. These findings are in direct contrast to the findings by Borjas, which suggest wage depression under the assumptions of the classic model.
+
+Given the wildly varying outputs of the models in the academic literature, it is abundantly clear that the underlying model assumptions matter greatly. The assumptions of perfect substitutability and the idea of an open labor market are the primary reasons behind the differences in the outputs of the quantitative analyses, as evidenced by the varied findings in the literature. Furthermore, the literature points to differences in how immigration affects the wages of less-educated and more-educated natives. This distinction is essential, as immigration policy development and implementation must accommodate the varying impacts across different socioeconomic backgrounds. The analysis presented in this paper seeks to complement the existing literature by using newly available American Community Survey (ACS) data and explicitly focusing on a group of immigrants that largely dominates immigration patterns and skews less educated, Spanish-speaking immigrants. Moreover, this study utilizes an empirical structure like Card’s, where labor markets are assessed at localized levels to account for mobility constraints that workers may face when they seek employment elsewhere in the country, along with other local labor market conditions like cost of living and local industry composition. Ultimately, utilizing a similar approach to Card enables testing of his original empirical design to ensure that it accommodates new data and elicits expected outcomes as expected by theory.
+
+## Theoretical Development
+
+Given that the primary assumptions underlying the current scholarly literature on immigration economics are a function of substitutability and the scope of the labor market, any theory of immigration economics should address the two in detail, along with other factors that might influence natives' wages. This paper assumes that immigrant and native workers are imperfect substitutes in terms of education and experience and complement each other in labor markets. It also assumes that labor markets are more localized than national due to worker mobility constraints.
+
+First, the argument that immigrant and native workers are not perfectly substitutable across education and experience groups is grounded in the economic concept of comparative advantage, where parties specialize in tasks they can execute more efficiently. In the context of less-educated immigrants and less-educated natives, comparative advantage may manifest as natives specializing in functions that require additional language, cultural awareness, and general customer-facing skills. In contrast, immigrants often focus on manual tasks that don’t need language skills. Ultimately, this scenario, where each group specializes in functions associated with their respective backgrounds, enhances efficiency, marginal productivity, and native wages. This complementary nature of task specialization between natives and immigrants is supported by empirical research conducted by Giovanni Peri and Chad Sparber. In their study, Perri and Sparber find that “states with large inflows of less education immigrants, relative to those with small slows, also experienced a greater shift in skill supply among less educated native-born workers toward communication tasks and away from manual ones; a greater decrease in the total supply of communication relative to manual skills; and a greater increase in the compensation paid to communication relative to manual skills” [@17b78fc0-f8f0-39df-bb5d-2fef32bcb74b]. Peri and Sparber attribute the increase in compensation paid to communication skills relative to manual ones to a model of comparative advantage between less-educated natives and immigrants where natives’ shift towards communication tasks “compensate (in part or entirely) for the depressing effect of immigration on the wage paid to manual tasks” [@17b78fc0-f8f0-39df-bb5d-2fef32bcb74b]. While the evidence indicates complementarity between less-educated immigrants and natives, it’s worthwhile to note that the degree of complementarity likely varies over time. In the short term, labor markets will likely experience tumult, especially with higher degrees of immigration. The short-term effects will manifest in labor market shocks where manual tasks are filled more by immigrants, and natives are forced to adapt. That said, in the medium to long term, labor markets adjust, and the mix of task specialization among immigrants and natives, coupled with the adaptation of firms adjusting their capital stocks to changing factors of labor production, offsets the wage losses experienced by natives with less education in the form of heightened productivity.
+
+Next, this paper theorizes that the assumptions underlying a national labor market are flawed. While it is true that workers in the United States can move anywhere they wish to pursue employment, the idea of workers picking up and moving at a moment's notice based on shifting dynamics in a national labor market is not based in reality, especially for less-educated workers who typically have fewer financial means to move relative to their more educated counterparts. Not only do natives with less education bear a more significant economic burden from moving outside their localities relative to their more educated counterparts, but they are also more likely to face residential mobility restraints, especially if they are homeowners. Less educated homeowners, on average, are less likely to contribute sizeable down payments for their homes, more likely to incur higher debt burdens as a result, and more likely to pay higher interest rates on their debt. As a result, they are likely to have less equity in their homes, making mobility more difficult for them to consider, especially if matching jobs are in high-cost-of-living areas. Ferreira, Gyourko, and Tracy find validity to this assumption in their research on negative home equity and household mobility. Specifically, they note that an analysis of data covering 1985-2005 indicates households “with negative equity have 2-year mobility rates that are 5.6% lower than similar households with positive equity, represented a decline of 47% relative to the average mobility rate” [@NBERw14310]. Additionally, research by Ganong and Shoag supports the idea that moving to high-cost-of-living areas, where economic opportunities are usually more bountiful, has become more difficult for less educated workers as home prices have risen in high-cost-of-living regions, thus reducing the returns of moving [@GANONG201776].
+
+In addition to economic considerations limiting mobility among natives with less education, other factors, like imperfect information, make the assumption of a nationalized labor market less likely. In a national labor market, workers have the information to make rational decisions that maximize their earnings. This level of access to information is not easily obtainable. Workers cannot extract precise wage estimates from prospective employers nationwide and determine the optimal employment to pursue based on the national industry and occupation landscape. Therefore, workers likely turn to known heuristics, including local knowledge of industries and occupations, to find prospective employment and utilize local social networks to understand pertinent employment opportunities. It is notable that while national social networks may exist to help workers find new employment, the likelihood of garnering more information from local networks is higher due to the larger number of social ties available. The combination of these factors makes it more likely for workers to seek employment in their localities. This assertion is confirmed by empirical data from Marinescu and Rathelot, which indicates that “job seekers are less likely to apply to vacancies farther away from their zip code of residence, and these results are robust to controls for job seeker and vacancy zip code fixed effects” [@74a81b65-b5e4-3f8f-9fdf-ed7db852a526].
+
+While establishing the assumptions of imperfect substitutability and localized labor markets provides a theoretical framework through which subsequent analyses can be conducted, they can be strengthened by a theoretical rationale on immigrant selection into local labor markets. Establishing a theoretical rationale for why immigrants choose specific labor markets over others provides an opportunity to control for self-selection bias in an empirical design that studies the impact of immigration on the wages of natives with less education. Namely, it becomes possible to control for immigrant self-selection into localities based on the performance of their respective economies, thus reducing the bias of model estimates. The chosen measure used to control for self-selection bias in this paper, the historical settlement of immigrants, has proven effective in predicting the current concentration of immigrants in local labor markets in academic literature. Specifically, Card uses a similar approach in a 2001 study analyzing the effects of immigration on the wages of native workers and finds prior settlement patterns of immigrants to be a strong predictor of current settlement patterns, thus providing evidence that the preceding settlement pattern measure is effective as an instrument in controlling immigrant self-selection [@213533e6-8e58-3c1b-ab61-00c987b61990]. It is worth asking: why do immigrants tend to settle in areas where previous immigrants have migrated to? The theoretical rationale for this phenomenon rests on the idea of immigrant social networks. Immigrant social networks manifest as settled immigrants assisting incoming immigrants in finding employment and housing in the locality to which they are migrating. Therefore, immigrants are most likely to migrate to areas where social networks are already established. Munshi empirically tested the impact of immigrant social networks, finding that they indeed boost the employment prospects of recent migrants, especially those with less education [@965bd8bb-44ef-311b-96a5-ec655c6d82af].
+
+Given the theoretical assumptions surrounding imperfect substitutability, localized labor markets, and immigrant migration patterns, this paper posits the following hypothesis: the concentration of Spanish-speaking immigrants in local labor markets does not negatively impact the wages of native workers with less education. Additionally, this paper hypothesizes that the impacts of Spanish-speaking immigrants’ concentration are positive on the wages of workers with more education and for all education groups due to an increased availability of task specialization.
+
+## Data and Methodology
+
+The data used in this paper’s analysis originate from three sources, with the primary source being the Public Use Microdata Series (PUMS) data published by the U.S. Census Bureau from the American Community Survey (ACS) 5-year sample for years 2019-2023 [@census2023acs]. Other sources include Integrated Public Use Microdata Series (IPUMS) data from a 1-in-20 random sample of the population, as collected via the 2000 decennial census and published by the University of Minnesota, and Geographic Correspondence Engine (Geocorr) data from the University of Missouri [@ipums2000; @geocorr2000_2010; @geocorr2010_2020]. PUMS and IPUMS data are observational, with each row corresponding to an individual survey response. PUMS data from the 2023 ACS PUMS data comprise 15,912,393 observations, while IPUMS data from 2000 constitute 14,081,466 observations. Each survey response is weighted to reflect a total population estimate. Moreover, it is important to note that each survey response is associated with a Public Use Microdata Area (PUMA), which is a “non-overlapping, statistical geographic area that partitions each state or equivalent entity into geographic areas containing no fewer than 100,000 people each” [@uscensusPUMA]. The data from Geocorr, generated by the University of Missouri, enable a crosswalk between PUMAs designated in the 2000 IPUMS data and those defined in the 2023 ACS PUMS data. Leveraging the crosswalk data is necessary because defined PUMAs change over time in conjunction with changes in regional populations. Ultimately, utilizing the crosswalk data enables a standardized analysis of PUMAS across the IPUMS and PUMS data. The crosswalk data comprises 4,444 observations for the methodology that crosswalks PUMAs defined in 2000 into 2010 and 5,735 observations for the method that crosswalks PUMAs defined in 2010 into 2020, with the 2020 PUMAs being the ones used in the 2023 ACS PUMS data.
+
+The PUMS data are filtered and manipulated to meet the needs of this paper’s analysis. Specifically, the PUMS data are broken down into a subset that includes survey responses from Spanish-speaking immigrants between 18 and 64, who earn more than \$0 per year and are employed by a company or governmental agency. The estimate of the number of Spanish-speaking immigrants in each PUMA is divided by the total number of estimated people in each PUMA to derive a concentration of Spanish-speaking immigrants by PUMA.  This concentration of Spanish-speaking immigrants is the independent variable of interest in this paper’s analysis and is spatially mapped by PUMA in @fig-map for reference.
+
+```{r fig-12, echo=FALSE, warning=FALSE, message=FALSE,eval=FALSE}
+#| label: fig-map1
+#| fig-cap: "Visual shows the concentration of Spanish-speaking immigrants by PUMA"
+#| freeze: true
+
+map_pumas <- pumas(state = NULL, cb = TRUE, year = 2020, progress_bar = FALSE) %>%
+  mutate(state_puma_ky = paste(
+    STATEFP20,PUMACE20,sep = "_"
+  )) %>%
+  filter(!STATEFP20 %in% c("02","15","60","66","69","72","78"))
+
+#Immigrant concentration
+map_pumas %>%
+  left_join(immigrant_prop_puma, by = "state_puma_ky") %>%
+  ggplot(aes(fill = spanish_prop)) +
+  geom_sf(color = NA) +
+  scale_fill_viridis_c(
+    option = "viridis",
+    labels = scales::percent_format(accuracy = 1),
+    limits = c(0, 0.2),
+    oob = scales::squish
+  ) +
+  labs(title = "Proportion of Spanish-Speaking Immigrants by PUMA",
+       fill = "Immigrant Proportion") +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 9, face = "bold"),
+    legend.position = "bottom",
+    legend.key.width = unit(1, "cm"),
+    legend.key.height = unit(.25,"cm"),
+    legend.title = element_text(hjust = 0.5, size = 7,face = "bold"),
+    legend.box = "vertical",
+    legend.title.position = "top",
+    legend.direction = "horizontal",
+    legend.text = element_text(size = 8),
+    plot.caption = element_text(size = 8, hjust = 0.5)
+  ) 
+```
+
+```{r fig-1, echo=FALSE, warning=FALSE, message=FALSE}
+#| label: fig-map
+#| fig-cap: "Visual shows the concentration of Spanish-speaking immigrants by PUMA"
+knitr::include_graphics("images/pums_map.png")
+```
+
+Sourcing the dependent variable of interest in this paper, the log of wages for natives with a high school education or less, is accomplished by filtering the PUMS data to reflect observations associated with natives between the ages of 18 and 64, having a high school education or less, earning more than \$0 per year, and employed by a company or government agency.
+
+The Spanish-speaking immigrant concentration is merged into the data, which contains observations for natives with a high school education or less, thereby providing a framework to develop models. @fig-scatter illustrates a scatterplot of the average log of wages for natives with a high school education or less, alongside the concentration of Spanish-speaking immigrants by PUMA. Finally, it’s worth noting that the same methodology was applied to natives with more than a high school education and to natives across all levels of education, thus providing three total PUMS datasets through which models and subsequent comparisons can be made. Calculating the concentration of Spanish-speaking immigrants by PUMA follows a framework established by Card in 2005, where Metropolitan Statistical Areas (MSAs) are used to determine the concentration of immigrants for subsequent analysis [@5ef82ded-cb9d-38e9-bdc0-68a4485c394d].
+
+```{r echo=FALSE, warning=FALSE}
+#| label: fig-scatter
+#| fig-cap: Visual shows the relationship between the dependent variable (log of wages) and the independent variable of interest (Spanish-speaking immigrant proportion) for natives with a high school degree or less
+
+aggregated_data <- 
+  all_data_lower %>%
+  group_by(state_puma_ky) %>%
+  summarize(
+    mean_log_wage = mean(log(WAGP), na.rm = TRUE)
+  ) %>%
+  left_join(immigrant_prop_puma, by = "state_puma_ky")
+
+
+
+p_scatter <- ggplot(aggregated_data, aes(x = spanish_prop, y = mean_log_wage)) +
+  geom_point(color = 'blue', alpha = 0.25) +
+  geom_smooth(method = "lm", se = FALSE, color = 'red') +
+  labs(
+    title = "Proportion of Spanish-speaking Immigrants vs. Log of Wages by PUMA",
+    x = "Proportion of Spanish-Speaking Immigrants (%)",
+    y = "Log of Wages"
+  ) +
+  scale_x_continuous(labels = scales::percent) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 9, face = "bold"),
+    axis.title.y = element_text(size = 9, face = "bold"),
+    axis.title.x = element_text(size = 9, face = "bold")
+  ) 
+
+print(p_scatter)
+```
+
+Other measures enmeshed in the observational PUMS data are incorporated into the three datasets to control for key socio-economic variables among natives. Specifically, they include age, age squared, education, gender, race, employment occupation, employment industry, hours worked per week, marital status, and state of residence. Control variables were selected due to their association with economic theory, which signifies their influence on wages. For example, age is expected to increase workers' wages, since it implies more work experience. The squared component of age accounts for the parabolic nature of age’s effect on wages; namely, as workers near the end of their careers, their wages decrease. Greater degrees of education impact wages, as education is often attributed to skills that workers can leverage during employment, enhancing their probability of earning higher wages. Gender, race, and marital status are utilized in this study as they are typically correlated with earned wages. Specific employment occupations and industries are associated with higher or lower wages and are included in the analysis. Next, the number of hours worked per week is included since wages will likely increase with the number of hours worked. Finally, state fixed effects are accounted for since states have differing employment and economic policies. Finally, it’s worth noting that the control variables used in this study follow similar usage by Borjas, Card, and Ottaviano & Peri [@30e6ac9b-71dc-358d-98cb-6b85354ba1ef; @5ef82ded-cb9d-38e9-bdc0-68a4485c394d; @d159eb91-86f6-3fcd-8c6b-f5b19000346e]. Descriptive statistics for continuous variables are provided in @tbl-descriptive-stats and in @tbl-descriptive-stats-factors for factor variables.
+
+```{r tbl-1, echo=FALSE, warning=FALSE}
+#| label: tbl-descriptive-stats
+#| tbl-cap: "Descriptive statistics for continuous variables. Data are associated with natives having a high school education or less"
+
+desc_data <- 
+  all_data_lower %>%
+    mutate(log_wage = log(WAGP),
+           spanish_prop_perc = spanish_prop * 100) %>%
+    select(log_wage, spanish_prop_perc, AGEP, WKHP) %>%
+    rename("Log (Wages)" = log_wage, 
+           "Spanish-Speaking Immigrant Prop. (%)" = spanish_prop_perc,
+           "Age" = AGEP,
+           "Hours Worked per Week" = WKHP)
+
+
+desc_continuous<- 
+  gt(
+      datasummary_skim(desc_data, 
+                       output = "dataframe", 
+                       fmt = 2,
+                       type = "numeric",
+                       fun_numeric = list(Min = Min, P25 = P25, Median = Median, P75 = P75,
+          Max = Max, Mean = Mean, SD = SD))
+  )
+
+desc_continuous %>%
+    tab_header(
+      title = "Descriptive Statistics for Continuous Variables"
+    ) %>%
+     tab_options(
+    table.font.size = px(12)
+     )
+
+
+
+```
+
+```{r tbl-2, echo=FALSE, warning=FALSE}
+#| label: tbl-descriptive-stats-factors
+#| tbl-cap: "Descriptive statistics for factor variables. Data are associated with natives having a high school education or less. Excludes industry, occupation, and state variables"
+
+desc_data_factor <- 
+  all_data_lower %>%
+  select(SCHL,SEX,RAC1P,MAR) %>%
+  droplevels() %>%
+    rename("Education" = SCHL,
+           "Gender" = SEX,
+           "Race" = RAC1P,
+           "Marital Status" = MAR)
+
+
+desc_factor<- 
+  gt(
+      datasummary_skim(desc_data_factor, 
+                       output = "dataframe", 
+                       type = "categorical",
+                       )
+  )
+
+desc_factor %>%
+    fmt_number(
+      columns = vars(N),
+      decimals = 0,
+      use_seps = TRUE
+    ) %>%
+    tab_header(
+      title = "Descriptive Statistics for Factor Variables"
+    )  %>%
+     tab_options(
+    table.font.size = px(12)
+     )
+
+
+```
+
+Finally, the concentration of Spanish-speaking immigrants by PUMA from the 2000 IPUMS data is incorporated into each of the three native datasets, allowing the analysis to leverage it as an instrumental variable (IV), which is helpful as a predictor of the Spanish-speaking immigrant concentration by PUMA from the 2023 ACS PUMS data. Ultimately, this IV is expected to control for immigrant self-selection into PUMAs, thereby reducing the bias in estimates produced by the models used in this paper’s analysis. The methodology of using an IV based on historical immigrant settlement patterns closely follows a similar framework established by Card and Ottaviano & Peri [@5ef82ded-cb9d-38e9-bdc0-68a4485c394d; @d159eb91-86f6-3fcd-8c6b-f5b19000346e].
+
+@fig-instrument is a scatterplot of the concentration between Spanish-speaking immigrants from the 2023 ACS PUMS data and the 2000 IPUMS data. Notably, @fig-instrument shows a strong linear relationship between the 2023 ACS PUMS data and the 2000 IPUMS data, suggesting that the prior settlement of Spanish-speaking immigrants is likely a reliable predictor of the current concentration of Spanish-speaking immigrants.
+
+```{r fig-4, echo=FALSE, warning=FALSE}
+#| label: fig-instrument
+#| fig-cap: "Visual indicates the relationship between the proportion of Spanish-speaking immigrants from 2000 and the current proportion of Spanish-speaking immigrants by PUMA"
+
+ggplot(all_immigrants, aes(x = spanish_prop_00, y = spanish_prop)) +
+  geom_point(color='blue', alpha = 0.25) +
+  geom_smooth(method='lm',se = FALSE, color = 'red') +
+  labs(
+    title = "Instrument vs.Spanish-Speaking Proportion",
+    x = "Year 2000 Spanish-Speaking Proportion (Instrument)",
+    y = "Current Spanish-Speaking Proportion"
+  ) +
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 9, face = "bold"),
+    axis.title.y = element_text(size = 9, face = "bold"),
+    axis.title.x = element_text(size = 9, face = "bold")
+  ) 
+
+```
+
+Overall, the data presented thus far provide a framework for an analysis using instrumental variable regression to estimate the effect of immigrant concentration on wages.
+
+## Results
+
+The results of the instrumental variable regression on each group are presented in @tbl-reg-output. Notably, the independent variable of interest, Spanish-speaking immigrant concentration, is positive and significant across all three groups, thus implying that a greater concentration of Spanish-speaking immigrants in localized labor markets (PUMAs) is associated with higher wages for natives with less education (high school education or less), more education (more than a high school education), and for all natives. Moreover, the coefficients associated with each model vary, with the less educated native group exhibiting the smallest positive coefficient tied to the concentration of Spanish-speaking immigrants. In contrast, the more educated native group shows the most significant positive coefficient associated with the concentration of Spanish-speaking immigrants. In summary, a one percent increase in the concentration of Spanish-speaking immigrants is associated with a 0.15% increase in wages for less-educated natives, a 0.59% increase in wages for more educated natives, and a 0.44% increase in wages for natives across all education levels, while holding the controls constant. Overall, these findings confirm the hypothesis that Spanish-speaking immigrants do not negatively affect the wages of native workers with less education.
+
+```{r main_regression_results, message=FALSE, warning=FALSE, echo=FALSE}
+#| label: tbl-reg-output
+
+main_reg_models <-
+  list(
+    "Less Education" = model1,
+    "More Education" = model2,
+    "All Natives" = model3
+  )
+
+main_reg_coef_map <-
+ c(
+  "spanish_prop" = "Spanish Immigrant Proportion",
+  "AGEP" = "Age",
+  "I(AGEP^2)" = "Age Squared",
+  "SCHLMiddle School" = "Middle School",
+  "SCHLSome High School" = "Some High School",
+  "SCHLHigh School" = "High School",
+  "SEXFemale" = "Female",
+  "RAC1PBlack or African American Alone" = "Black or African American Alone",
+  "RAC1PNative American" = "Native American Alone",
+  "RAC1PAsian Alone" = "Asian Alone",
+  "RAC1PNative Hawaiian and Other Pacific Islander Alone" = "Native Hawaiian and Other Pacific Islander Alone",
+  "RAC1PSome Other Race Alone" = "Some Other Race Alone",
+  "RAC1PTwo or More Races" = "Two or More Races",
+  "WKHP" = "Hours Worked per Week",
+  "MARNot Married" = "Not Married",
+  "SCHLAssociate's Degree" = "Associates Degree",
+  "SCHLBachelor's degree" = "Bachelor's degree",
+  "SCHLMaster's degree" = "Master's degree",
+  "SCHLProfessional degree beyond a bachelor's degree" = "Professional degree beyond a bachelor's degree",
+  "SCHLDoctorate degree" = "Doctorate degree",
+  "SCHLSome College" = "Some College"
+)
+
+modelsummary(
+  main_reg_models,
+  coef_omit = "as\\.factor\\(STATE\\)|^occp|^indp",
+  vcov = primary_models_vcov,
+  coef_map = main_reg_coef_map,
+  output = "gt",
+  fmt = 3,
+  stars = c("*" = .1,"**" = .05, "***" = .01),
+  gof_omit = 'Adj.R2|AIC|BIC|Log.Lik|RMSE|Std.Errors',
+  notes = c("State fixed effects, occupation, and industry are included, but not reported.", "Robust standard errors clustered by PUMA")
+)  %>%
+  tab_header(
+    title = "Instrumental Variable Regression Output"
+  ) %>%
+  tab_options(
+    table.font.size = px(12),
+    table.border.top.style = "solid",
+    table.border.bottom.style = "solid",
+    table.border.left.style = "solid",
+    table.border.right.style = "solid",
+    table.border.top.width = px(1),
+    table.border.bottom.width = px(1),
+    table.border.left.width = px(1),
+    table.border.right.width = px(1),
+    table_body.vlines.style = "solid",
+    table_body.vlines.width = px(1),
+    table_body.vlines.color = "gray"
+  )
+
+
+```
+
+While the regression output provides context on how Spanish-speaking immigrant concentrations affect the wages of less educated native workers on average, it does not give context on the nuances of the effects on less educated workers across dimensions like gender and industry. To understand the nuances of these effects, additional instrument regression analyses were run with the same underlying data for less educated natives but filtered by gender and for several industries. Industry was selected for further study due to work conducted by Peri and Sparber, which noted specific occupations utilize higher degrees of communication as factors of production, thus providing a theoretical framework through which native workers could shift their production into roles that are complementary to immigrant labor [@17b78fc0-f8f0-39df-bb5d-2fef32bcb74b]. The specific industries to analyze followed the framework outlined by Peri and Sparber, which noted occupations in construction require minimal communication, while occupations in professional services and retail require high degrees of communication [@17b78fc0-f8f0-39df-bb5d-2fef32bcb74b]. As a result, the construction, retail, and professional services industries were analyzed individually to assess the impacts of Spanish-speaking immigrants on less educated native workers. Furthermore, additional industry analyses for hospitality, education, health and social services, manufacturing, and agriculture were conducted to understand immigration’s impacts on wages for less educated workers. Education and health/social services were chosen as industries to analyze as they were expected to exhibit complementary characteristics with higher degrees of immigration. The expectation of complementarity originates from the idea that more immigration will require additional communication skills from natives due to an increasing population of people who need extensive communication and cultural support to receive support services from their communities.  Hospitality, manufacturing, and agriculture were also assessed under the theoretical assumption that they are more manual and therefore more susceptible to labor market substitution by immigrant workers, thereby depressing wages for natives with less education. This paper extends the analysis of Spanish-immigrant labor’s impact relative to the gender of less educated natives since this paper assumes that men and women supply different types of labor to the labor market on average, with men generally providing more manual labor and women providing less manual labor. If this assumption is valid, it’s possible to assume that men would accrue fewer wage benefits, or even incur wage penalties, with additional immigration, while women would experience the opposite.
+
+@fig-industry-viz provides the estimates of the Spanish-speaking immigrant concentration coefficient for the industry analysis, while @tbl-industry-viz-reg-substitutes and @tbl-industry-viz-reg-complements, which are included in this paper’s appendix, provide the entire instrumental regression model outputs.
+
+```{r coefficient_plot_industry, warning=FALSE, message=FALSE, echo=FALSE, cache=TRUE}
+#| fig-height: 4
+#| label: fig-industry-viz
+#| fig-cap: "Instrumental variable regression coefficient estimates for Spanish-speaking immigrant concentration for selected industries"
+
+#Create function to implement robust se
+tidy_clustered <- function(model, cluster) {
+  tidy(coeftest(model, vcov = vcovCL(model, cluster = cluster)), conf.int = TRUE)
+}
+
+industry_models <- 
+  list(
+    "Construction" = const_model,
+    "Manufacturing" = manufact_model,
+    "Hospitality" = hospitality_model,
+    "Agriculture" = agriculture_model,
+    "Health/Social Svcs." = health_social_model,
+    "Education" = education_model,
+    "Professional Svcs." = prof_services_model,
+    "Retail" = retail_model
+  )
+
+industry_results <- lapply(industry_models, tidy_clustered, cluster = ~state_puma_ky)
+industry_results_df <- bind_rows(industry_results, .id = "Industry")
+
+#Grab independent variable
+industry_results_df <-
+  industry_results_df %>%
+  filter(term == "spanish_prop") %>%
+  mutate(
+    Category = if_else(Industry %in% c("Construction","Manufacturing","Hospitality","Agriculture"), "Expected Substitutes", "Expected Complements")
+  )
+
+#Plot
+ggplot(industry_results_df, aes(x = estimate, y = reorder(Industry, estimate), color = Category)) +
+  geom_errorbarh(aes(xmin = conf.low, xmax  =conf.high), height = 0.2) +
+  geom_point(aes(shape = p.value > 0.05), size = 3, fill = "white") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_text_repel(aes(label = sprintf("%.2f", estimate)),
+                  size = 3,
+                  nudge_y = 0.3,
+                  show.legend = F) +
+    scale_shape_manual(values = c(`TRUE` = 21, `FALSE` = 16), labels = c("p < 0.05", "Not significant")) +
+  labs(title = "Impact of Spanish-Speaking Immigrants on Native Wages by Industry",
+       subtitle = "Coefficient estimates from IV regression (95% CI)",
+       x = "Coefficient Estimate (Log Wages)",
+       y = "",
+       color = "Industry Category",
+       shape = "Statistical Significance") +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.major.y = element_blank(),
+    plot.title = element_text(hjust = 0.5, size = 9, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 9),
+    axis.title.y = element_text(size = 9, face = "bold"),
+    axis.title.x = element_text(size = 9, face = "bold"),
+    legend.text = element_text(size = 8),
+    legend.key.width = unit(1, "cm"),
+    legend.key.height = unit(.25,"cm"),
+    legend.title = element_text(hjust = 0.5, size = 7,face = "bold")
+  ) +
+  guides(
+    shape = guide_legend(nrow = 1, byrow = TRUE, order = 1),
+    color = guide_legend(nrow = 1, byrow = TRUE, order = 2)
+  )
+
+
+  
+```
+
+@fig-industry-viz indicates that, on average, a one percent increase in the concentration of Spanish-speaking immigrants is associated with higher wages for natives with less education across multiple industries, which include:  0.71% higher wages in the hospitality industry, 0.68% higher wages in the education industry, 0.34% higher wages in the health and social services industry, 0.32% higher wages in the retail industry, and 0.02% higher wages in the professional services industry. On the other hand, a one percent increase in the concentration of Spanish-speaking immigrants is associated with lower wages for natives with less education across the following industries: 0.22% lower wages in the construction industry, 0.30% lower wages in the manufacturing industry, and 0.50% lower wages in the agriculture industry. Of all the industries analyzed, the Spanish-speaking immigrant concentration coefficient estimates for hospitality, education, health/social services, retail, and manufacturing industries were statistically significant at the 5% level. In contrast, the professional services, construction, and agriculture industries were not statistically significant.
+
+@fig-gender-viz provides the coefficient estimates associated with the concentration of Spanish-speaking immigrants by gender for natives with less education, while @tbl-gender-viz-reg, located in the appendix, provides the complete instrumental regression table. Ultimately, the instrumental regression analysis indicates the wages of women with less education are, on average, 0.32% higher for every 1% increase in immigration. In comparison, the wages of men with less education are .01% higher for every 1% increase in immigration. The Spanish-speaking immigrant concentration coefficient is statistically significant at the 5% level for women and is not statistically significant for men.
+
+```{r coefficient_plot_gender, warning=FALSE, message=FALSE, echo=FALSE, cache=TRUE}
+#| label: fig-gender-viz
+#| fig-cap: "Instrumental variable regression coefficient estimates for Spanish-speaking immigrant concentration by gender"
+
+gender_models <- 
+  list(
+    "Male" = model_male,
+    "Female" = model_female
+  )
+
+gender_results <- lapply(gender_models, tidy_clustered, cluster = ~state_puma_ky)
+gender_results_df <- bind_rows(gender_results, .id = "Gender")
+
+#Grab independent variable
+gender_results_df <-
+  gender_results_df %>%
+  filter(term == "spanish_prop")
+
+#Plot
+ggplot(gender_results_df, aes(x = estimate, y = reorder(Gender, estimate), color = Gender)) +
+  geom_errorbarh(aes(xmin = conf.low, xmax  =conf.high), height = 0.2) +
+  geom_point(aes(shape = p.value > 0.05), size = 3, fill = "white") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  geom_text_repel(aes(label = sprintf("%.2f", estimate)),
+                  size = 3,
+                  nudge_y = 0.3,
+                  show.legend = F) +
+    scale_shape_manual(values = c(`TRUE` = 21, `FALSE` = 16), labels = c("p < 0.05", "Not significant")) +
+  labs(title = "Impact of Spanish-Speaking Immigrants on Native Wages by Gender",
+       subtitle = "Coefficient estimates from IV regression (95% CI)",
+       x = "Coefficient Estimate (Log Wages)",
+       y = "",
+       color = "Gender",
+       shape = "Statistical Significance") +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.major.y = element_blank(),
+    plot.title = element_text(hjust = 0.5, size = 9, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 9),
+    axis.title.y = element_text(size = 9, face = "bold"),
+    axis.title.x = element_text(size = 9, face = "bold"),
+    legend.text = element_text(size = 8),
+    legend.key.width = unit(1, "cm"),
+    legend.key.height = unit(.25,"cm"),
+    legend.title = element_text(hjust = 0.5, size = 7,face = "bold")
+  ) +
+  guides(shape = guide_legend(nrow = 1, byrow = TRUE, order = 1),
+         color = guide_legend(nrow = 1, byrow = TRUE, order = 2))
+```
+
+What do all the results mean? They indicate much about the substitutability between immigrant and native labor. At a high level, natives with more education see higher wages, on average, due to a higher concentration of Spanish-speaking immigrants than natives with less education, implying a greater degree of complementarity among immigrant labor and specialized native labor. Specifically, the more specialized the native labor, and the more different that specialization is from the manual labor immigrants provide, the greater the potential complementary benefits and wages for natives. Therefore, the idea of comparative advantage in the labor market, where natives and immigrants specialize in tasks, has a high degree of evidentiary support and should consequently inform U.S. immigration policy to maximize benefits. While task specialization in the labor market and its benefits are generally positive across all education levels, the evidence also indicates a nuanced environment of how the benefits are applied across industries and by the gender of the people filling roles in those industries, for industries like construction, agriculture, and manufacturing, task specialization and subsequent complementarity cannot occur as easily because those industries are more manual and therefore don’t accommodate supporting roles that require an understanding of language and culture as readily as other industries. On the other hand, other more service-oriented industries like education, health/social services, retail, and professional services require much face-to-face interaction with clients, enabling an environment of complementary labor and specialization, thus increasing wages. Furthermore, the evidence indicates that the industry this paper expected to see higher degrees of substitutable labor between immigrants and natives, hospitality, saw higher wages for natives on average, and was the highest of all the industries analyzed. The difference between the evidence and expectation is likely to result from native workers filling roles within hospitality that require more customer-facing interactions, thus pushing their wages up on average. Overall, the evidence appears to suggest that industries with more customer interaction offer natives with additional abilities to complement immigrant labor. Finally, women with less education see higher wages on average with increasing concentrations of Spanish-speaking immigrants. This suggests that women can better adjust their roles within industries and occupations to complement immigrant labor. While it is impossible to prove given the analyses conducted, this paper assumes women supply labor that is more likely oriented within industries and occupations that require more communication relative to men, who, on average, fill roles that are more manual and susceptible to substitution by immigrants.
+
+## Conclusion
+
+This paper sought to understand if the concentration of Spanish-speaking immigrants impacts the wages of native workers with a high school education or less. It posited the hypothesis that the concentration of Spanish-speaking immigrants in local labor markets does not negatively impact the wages of native workers with less education due to the imperfect substitutability of labor. Ultimately, this paper found that the concentration of Spanish-speaking immigrants has no negative association with the wages of native workers with a high school education or less, ultimately confirming the hypothesis. The analysis conducted in this paper found that, on average, as the concentration of Spanish-speaking immigrants increases, the wages of natives across all education groups, including those with a high school education or less, increase too. Finally, the analysis added nuance to the discussion on immigration’s impact on the wages of natives with a high school education or less by assessing effects through industry and gender, ultimately finding that the costs and benefits of increased Spanish-speaking immigrant concentration vary for specific industries and genders.
+
+The findings presented in this paper are directly applicable to the immigration policy of the U.S. Specifically, they imply that in an environment of steady-state immigration from Latin American countries, the U.S. should seek to leverage the complementary nature of immigrant labor as much as possible while assisting native workers in industries that are more manual and therefore more prone to immigrant labor substitution in transitioning to new industries and roles instead of assuming a protectionist posture for the supposed benefit of native workers. However, more importantly, this paper suggests that the outsized focus and attention on the determinants of immigrant labor on the U.S. economy and the economic prospects of native workers is misplaced since higher degrees of Spanish-speaking immigrants are associated with minor changes in the wages of natives across all education groups. Moreover, those changes are positive on average and statistically significant. Therefore, it is likely more productive for the U.S. government to prioritize higher-impact agenda items for the benefit of the American people.
+
+While the research findings presented in this paper offer insights into the economics of immigration, they are not without limitations. First, like the other literature focusing on the effects of immigration on the wages of native workers, this paper makes broad assumptions about the substitutability of labor and the types of labor markets in the United States. This paper assumed that labor markets were localized at a PUMA level and that labor is imperfectly substitutable across immigrants and natives. As a result of these assumptions, the model outputs were likely different than if the assumptions had been the opposite. Moreover, this paper mostly uses the ACS 5-year estimate from 2019-2023 from the U.S. Census Bureau as the data for the underlying model. This data is not specific to an immigrant shock and is not longitudinal. Therefore, it is possible that the underlying model does not adequately capture effects from exogenous immigrant shocks that likely have a much different impact on labor markets relative to steady-state immigration and effects that vary over time. Therefore, care should be exercised in applying the findings of this study to all immigration-related events and their subsequent impacts on labor markets. Finally, it is possible that the year selected for the instrumental variable, 2000, was inappropriate to control for Spanish-speaking immigrants settling in areas with similar immigrant populations. Therefore, readers of this study should understand that changing the year of the instrumental variable could impact the coefficient estimates reported in this analysis.
+
+While the findings presented in this paper offer clarity on some topics, they also provide an opportunity to explore other areas that might provide helpful context to the discussion of immigration and its economic impacts. For example, examining the base set of assumptions that underlie the models presented in much of the academic literature thus far, including in this paper, of substitutability and the localization of labor markets, would prove fruitful. If it is possible to empirically confirm or deny the substitutability and/or the localization of labor markets, future papers examining immigration’s impacts on the wages of native workers would correctly utilize actual economic conditions, thereby providing more robust and generalizable results. Another helpful form of additional research would include an assessment of why the economic impacts of immigration remain pervasive in political discourse, despite an abundant body of literature that indicates the impacts are minor. Certain types of industry and/or constituents may face additional costs under increased immigration and have higher political power, thus enabling this type of immigration discussion to remain at the top of the agenda. Alternatively, politicians may find the debate on immigration and its economic effects to be one that voters resonate with, despite the lack of general empirical evidence. This engagement may drive voters to the polls, thus increasing relative political power. Overall, much remains to be discovered in assessing the economic impacts of immigration from Spanish-speaking countries and the relative importance of the topic in the political discourse of the United States.
+
+\clearpage
+
+## References
+
+::: {#refs}
+:::
+
+\clearpage
+
+\pagestyle{empty}
+
+\begin{center}
+{\Huge \textbf{Appendix}}
+\end{center}
+
+```{r industry_subs_regression_results, message=FALSE, warning=FALSE, echo=FALSE}
+#| label: tbl-industry-viz-reg-substitutes
+
+
+industry_subs_reg_models <-
+  list(
+    "Construction" = const_model,
+    "Manufacturing" = manufact_model,
+    "Hospitality" = hospitality_model,
+    "Agriculture" = agriculture_model
+  )
+
+subs_vcov <- 
+  industry_models_vcov[c("Construction","Manufacturing","Hospitality","Agriculture")]
+  
+subs_coef_map <-
+  c(
+  "spanish_prop" = "Spanish Immigrant Proportion",
+  "AGEP" = "Age",
+  "I(AGEP^2)" = "Age Squared",
+  "SCHLMiddle School" = "Middle School",
+  "SCHLSome High School" = "Some High School",
+  "SCHLHigh School" = "High School",
+  "SEXFemale" = "Female",
+  "RAC1PBlack or African American Alone" = "Black or African American Alone",
+  "RAC1PNative American" = "Native American Alone",
+  "RAC1PAsian Alone" = "Asian Alone",
+  "RAC1PNative Hawaiian and Other Pacific Islander Alone" = "Native Hawaiian and Other Pacific Islander Alone",
+  "RAC1PSome Other Race Alone" = "Some Other Race Alone",
+  "RAC1PTwo or More Races" = "Two or More Races",
+  "WKHP" = "Hours Worked per Week",
+  "MARNot Married" = "Not Married"
+  )
+
+
+modelsummary(
+  industry_subs_reg_models,
+  coef_omit = "as\\.factor\\(STATE\\)|^occp|^indp",
+  vcov = subs_vcov,
+  coef_map = subs_coef_map,
+  output = "gt",
+  fmt = 3,
+  stars = c("*" = .1,"**" = .05, "***" = .01),
+  gof_omit = 'Adj.R2|AIC|BIC|Log.Lik|RMSE|Std.Errors',
+  notes = c("State fixed effects, occupation, and industry are included, but not reported.", "Robust standard errors clustered by PUMA")
+)  %>%
+  tab_header(
+    title = "Expected Industry Substitutes Instrumental Variable Regression Output"
+  ) %>%
+  tab_options(
+    table.font.size = px(12),
+    table.border.top.style = "solid",
+    table.border.bottom.style = "solid",
+    table.border.left.style = "solid",
+    table.border.right.style = "solid",
+    table.border.top.width = px(1),
+    table.border.bottom.width = px(1),
+    table.border.left.width = px(1),
+    table.border.right.width = px(1),
+    table_body.vlines.style = "solid",
+    table_body.vlines.width = px(1),
+    table_body.vlines.color = "gray"
+  )
+```
+
+```{r industry_complements_results, message=FALSE, warning=FALSE, echo=FALSE}
+#| label: tbl-industry-viz-reg-complements
+
+industry_complements_reg_models <-
+  list(
+    "Health/Social Svcs." = health_social_model,
+    "Education" = education_model,
+    "Profes. Svcs." = prof_services_model,
+    "Retail" = retail_model
+  )
+
+complements_vcov <- 
+  industry_models_vcov[c("Health and Social Services","Education","Professional Services","Retail")]
+
+complements_coef_map <-
+  c(
+  "spanish_prop" = "Spanish Immigrant Proportion",
+  "AGEP" = "Age",
+  "I(AGEP^2)" = "Age Squared",
+  "SCHLMiddle School" = "Middle School",
+  "SCHLSome High School" = "Some High School",
+  "SCHLHigh School" = "High School",
+  "SEXFemale" = "Female",
+  "RAC1PBlack or African American Alone" = "Black or African American Alone",
+  "RAC1PNative American" = "Native American Alone",
+  "RAC1PAsian Alone" = "Asian Alone",
+  "RAC1PNative Hawaiian and Other Pacific Islander Alone" = "Native Hawaiian and Other Pacific Islander Alone",
+  "RAC1PSome Other Race Alone" = "Some Other Race Alone",
+  "RAC1PTwo or More Races" = "Two or More Races",
+  "WKHP" = "Hours Worked per Week",
+  "MARNot Married" = "Not Married"
+  )
+
+modelsummary(
+  industry_complements_reg_models,
+  coef_omit = "as\\.factor\\(STATE\\)|^occp|^indp",
+  vcov = complements_vcov,
+  coef_map = complements_coef_map,
+  output = "gt",
+  fmt = 3,
+  stars = c("*" = .1,"**" = .05, "***" = .01),
+  gof_omit = 'Adj.R2|AIC|BIC|Log.Lik|RMSE|Std.Errors',
+  notes = c("State fixed effects, occupation, and industry are included, but not reported.", "Robust standard errors clustered by PUMA")
+)  %>%
+  tab_header(
+    title = "Expected Industry Complements Instrumental Variable Regression Output"
+  ) %>%
+  tab_options(
+    table.font.size = px(12),
+    table.border.top.style = "solid",
+    table.border.bottom.style = "solid",
+    table.border.left.style = "solid",
+    table.border.right.style = "solid",
+    table.border.top.width = px(1),
+    table.border.bottom.width = px(1),
+    table.border.left.width = px(1),
+    table.border.right.width = px(1),
+    table_body.vlines.style = "solid",
+    table_body.vlines.width = px(1),
+    table_body.vlines.color = "gray"
+  )
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#| label: tbl-gender-viz-reg
+
+gender_reg_models <-
+  list(
+    "Male" = model_male,
+    "Female" = model_female
+  )
+
+gender_coef_map <-
+  c(
+  "spanish_prop" = "Spanish Immigrant Proportion",
+  "AGEP" = "Age",
+  "I(AGEP^2)" = "Age Squared",
+  "SCHLMiddle School" = "Middle School",
+  "SCHLSome High School" = "Some High School",
+  "SCHLHigh School" = "High School",
+  "SEXFemale" = "Female",
+  "RAC1PBlack or African American Alone" = "Black or African American Alone",
+  "RAC1PNative American" = "Native American Alone",
+  "RAC1PAsian Alone" = "Asian Alone",
+  "RAC1PNative Hawaiian and Other Pacific Islander Alone" = "Native Hawaiian and Other Pacific Islander Alone",
+  "RAC1PSome Other Race Alone" = "Some Other Race Alone",
+  "RAC1PTwo or More Races" = "Two or More Races",
+  "WKHP" = "Hours Worked per Week",
+  "MARNot Married" = "Not Married"
+  )
+
+modelsummary(
+  gender_reg_models,
+  coef_omit = "as\\.factor\\(STATE\\)|^occp|^indp",
+  vcov = gender_vcov,
+  coef_map = gender_coef_map,
+  output = "gt",
+  fmt = 3,
+  stars = c("*" = .1,"**" = .05, "***" = .01),
+  gof_omit = 'Adj.R2|AIC|BIC|Log.Lik|RMSE|Std.Errors',
+  notes = c("State fixed effects, occupation, and industry are included, but not reported.", "Robust standard errors clustered by PUMA")
+)  %>%
+  tab_header(
+    title = "Gender Instrumental Variable Regression Output"
+  ) %>%
+  tab_options(
+    table.font.size = px(12),
+    table.border.top.style = "solid",
+    table.border.bottom.style = "solid",
+    table.border.left.style = "solid",
+    table.border.right.style = "solid",
+    table.border.top.width = px(1),
+    table.border.bottom.width = px(1),
+    table.border.left.width = px(1),
+    table.border.right.width = px(1),
+    table_body.vlines.style = "solid",
+    table_body.vlines.width = px(1),
+    table_body.vlines.color = "gray"
+  )
+
+```
